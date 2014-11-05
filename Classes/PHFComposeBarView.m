@@ -59,6 +59,9 @@ static CGFloat kTextViewToSuperviewHeightDelta;
 @property (strong, nonatomic) PHFDelegateChain *delegateChain;
 @property (strong, nonatomic, readonly) UIButton *textContainer;
 @property (assign, nonatomic) CGFloat previousTextHeight;
+@property (assign, nonatomic) BOOL animationInProgress;
+@property (assign, nonatomic) BOOL textViewNeedsUpdate;
+
 @end
 
 
@@ -524,12 +527,23 @@ static CGFloat kTextViewToSuperviewHeightDelta;
             PHFComposeBarViewFrameEndUserInfoKey          : [NSValue valueWithCGRect:frameEnd],
         };
 
-        void (^afterAnimation)(BOOL) = ^(BOOL finished){
+		void (^afterAnimationSkipped)(void) = ^
+		{
+			[self postNotification:PHFComposeBarViewDidChangeFrameNotification userInfo:didChangeUserInfo];
+			if ([[self delegate] respondsToSelector:@selector(composeBarView:didChangeFromFrame:toFrame:)])
+				[[self delegate] composeBarView:self
+							 didChangeFromFrame:frameBegin
+										toFrame:frameEnd];
+		};
+
+		void (^afterAnimation)(BOOL) = ^(BOOL finished)
+		{
             [self postNotification:PHFComposeBarViewDidChangeFrameNotification userInfo:didChangeUserInfo];
             if ([[self delegate] respondsToSelector:@selector(composeBarView:didChangeFromFrame:toFrame:)])
                 [[self delegate] composeBarView:self
                              didChangeFromFrame:frameBegin
                                         toFrame:frameEnd];
+			self.animationInProgress = YES;
         };
 
         [self postNotification:PHFComposeBarViewWillChangeFrameNotification userInfo:willChangeUserInfo];
@@ -540,15 +554,17 @@ static CGFloat kTextViewToSuperviewHeightDelta;
                                    duration:animationDuration
                              animationCurve:kResizeAnimationCurve];
 
-        if (animated) {
+        if( animated && !self.animationInProgress )
+		{
             [UIView animateWithDuration:kResizeAnimationDuration * animationDurationFactor
                                   delay:0.0
                                 options:kResizeAnimationOptions
                              animations:animation
                              completion:afterAnimation];
+			self.animationInProgress = YES;
         } else {
             animation();
-            afterAnimation(YES);
+            afterAnimationSkipped();
         }
     }
 }
@@ -627,9 +643,20 @@ static CGFloat kTextViewToSuperviewHeightDelta;
 
 - (CGFloat)textHeight {
     UITextView *textView = [self textView];
-    CGFloat height = [textView sizeThatFits:CGSizeMake([textView frame].size.width, FLT_MAX)].height;
+	
+	CGFloat height;
 
-    return ceilf(height);
+	if( self.textViewNeedsUpdate || !textView.superview )
+	{
+		height = [textView sizeThatFits:CGSizeMake([textView frame].size.width, FLT_MAX)].height;
+		self.textViewNeedsUpdate = NO;
+	}
+	else
+	{
+		height = textView.frame.size.height;
+	}
+
+    return ceilf(height - 1e-9);
 }
 
 - (void)updateButtonEnabled {
@@ -643,7 +670,7 @@ static CGFloat kTextViewToSuperviewHeightDelta;
 
     if (!isHidden) {
         NSInteger count = [[[[self textView] text] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] length];
-        NSString *text = [NSString stringWithFormat:@"%d/%d", count, [self maxCharCount]];
+        NSString *text = [NSString stringWithFormat:@"%u/%u", (unsigned int)count, (unsigned int)[self maxCharCount]];
         [[self charCountLabel] setText:text];
     }
 }
@@ -680,6 +707,7 @@ static CGFloat kTextViewToSuperviewHeightDelta;
 }
 
 - (void)handleTextViewChangeAnimated:(BOOL)animated {
+	self.textViewNeedsUpdate = YES;
     [self updatePlaceholderVisibility];
     [self resizeTextViewIfNeededAnimated:animated];
     [self scrollToCaretIfNeeded];
